@@ -1,0 +1,26 @@
+# Ambiente local/desenvolvimento: só app + postgres.
+services:
+  app:
+    build: .
+    ports: ["8080:8080"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://pague:pague@db:5432/pague?sslmode=disable
+    volumes: ["files:/data"]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: pague, POSTGRES_PASSWORD: pague, POSTGRES_DB: pague }
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pague"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  pgdata:
+  files:
