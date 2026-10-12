@@ -1,1 +1,275 @@
 openapi: 3.0.3
+info:
+  title: Pague.IA — Gestão de Serviços
+  version: 0.1.0
+  description: |
+    API REST do controle de serviços recorrentes, contratos, faturas e auditoria.
+    Autenticação por sessão (cookie `sid`, HttpOnly, SameSite=Strict) obtida em `POST /api/auth/login`.
+    Requisições de escrita com cabeçalho `Origin` de outro host são recusadas (CSRF).
+    Cadastros usam o mesmo contrato: listagem paginada com busca (`q`), filtros por coluna
+    (`?col=v`, `?col=a,b`, `?col_from=`, `?col_to=`), criação (POST) e atualização parcial (PATCH)
+    com `_reason` opcional gravado na trilha de auditoria.
+servers:
+  - url: /api
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: sid }
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: integer } }
+    q: { name: q, in: query, schema: { type: string }, description: busca livre }
+    limit: { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+    offset: { name: offset, in: query, schema: { type: integer, default: 0 } }
+    from: { name: from, in: query, schema: { type: string, format: date } }
+    to: { name: to, in: query, schema: { type: string, format: date } }
+  schemas:
+    Error:
+      type: object
+      properties: { error: { type: string } }
+    Page:
+      type: object
+      properties:
+        items: { type: array, items: { type: object } }
+        total: { type: integer }
+    Supplier:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        legal_name: { type: string }
+        trade_name: { type: string }
+        tax_id: { type: string, description: CNPJ/CPF (validado, gravado só com dígitos) }
+        contacts: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address: { type: string }
+        status: { type: string, enum: [ativo, inativo] }
+        notes: { type: string }
+    Service:
+      type: object
+      required: [name, supplier_id]
+      properties:
+        supplier_id: { type: integer }
+        contract_id: { type: integer }
+        unit_id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        category: { type: string }
+        owner: { type: string }
+        cost_center: { type: string }
+        periodicity: { type: string, enum: [mensal, bimestral, trimestral, semestral, anual] }
+        expected_amount: { type: number }
+        tolerance_pct: { type: number, default: 5 }
+        due_day: { type: integer, minimum: 1, maximum: 31 }
+        status: { type: string, enum: [ativo, suspenso, cancelado, encerrado, em_implantacao] }
+        criticality: { type: string, enum: [baixa, media, alta, critica] }
+        starts_on: { type: string, format: date }
+        ends_on: { type: string, format: date }
+        renewal_on: { type: string, format: date }
+        notes: { type: string }
+    Contract:
+      type: object
+      required: [number, supplier_id, starts_on]
+      properties:
+        number: { type: string }
+        supplier_id: { type: integer }
+        starts_on: { type: string, format: date }
+        ends_on: { type: string, format: date }
+        auto_renew: { type: boolean }
+        periodicity: { type: string }
+        amount: { type: number }
+        adjustment_index: { type: string }
+        adjustment_pct: { type: number }
+        owner: { type: string }
+        document_id: { type: integer }
+        status: { type: string, enum: [vigente, em_negociacao, encerrado, cancelado] }
+        notes: { type: string }
+    Expectation:
+      type: object
+      required: [service_id, competence]
+      properties:
+        service_id: { type: integer }
+        competence: { type: string, example: "2026-10", description: AAAA-MM (gravado como 1º dia do mês) }
+        expected_amount: { type: number }
+        expected_due: { type: string, format: date }
+        status: { type: string, enum: [pendente, recebida, faltante, dispensada] }
+        notes: { type: string }
+    Unit:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [empresa, unidade, departamento] }
+        parent_id: { type: integer }
+    Invoice:
+      type: object
+      description: O status só muda pelo workflow (`/invoices/{id}/transition`), nunca por PATCH.
+      properties:
+        supplier_id: { type: integer }
+        service_id: { type: integer }
+        contract_id: { type: integer }
+        unit_id: { type: integer }
+        competence: { type: string, example: "2026-10" }
+        issued_on: { type: string, format: date }
+        due_on: { type: string, format: date }
+        amount: { type: number }
+        doc_number: { type: string }
+        tax_id: { type: string }
+        kind: { type: string, enum: [fatura, boleto, nf, nfse, recibo, outro] }
+        digitable_line: { type: string }
+        barcode: { type: string }
+        pix: { type: string }
+        notes: { type: string }
+        payment_scheduled_on: { type: string, format: date }
+        paid_on: { type: string, format: date }
+        paid_amount: { type: number }
+        status:
+          type: string
+          readOnly: true
+          enum: [RECEIVED, PROCESSING, EXTRACTED, IDENTIFIED, AUDITING, REVIEW, APPROVED, BLOCKED, REJECTED, FOR_PAYMENT, PAID]
+security:
+  - session: []
+paths:
+  /auth/login:
+    post:
+      security: []
+      summary: Inicia sessão (10 tentativas por minuto por IP)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [email, password], properties: { email: { type: string }, password: { type: string } } }
+      responses:
+        "200": { description: Sessão criada; devolve usuário e permissões }
+        "401": { description: Credenciais inválidas, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: Muitas tentativas }
+  /auth/logout:
+    post: { summary: Encerra a sessão, responses: { "204": { description: ok } } }
+  /auth/me:
+    get: { summary: Usuário atual, permissões e estado das integrações, responses: { "200": { description: ok }, "401": { description: sem sessão } } }
+
+  /suppliers:
+    get: { summary: Lista fornecedores, parameters: [{ $ref: "#/components/parameters/q" }, { $ref: "#/components/parameters/limit" }, { $ref: "#/components/parameters/offset" }], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Page" } } } } } }
+    post: { summary: Cria fornecedor, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Supplier" } } } }, responses: { "201": { description: criado }, "400": { description: validação }, "409": { description: duplicado } } }
+  /suppliers/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Fornecedor, responses: { "200": { description: ok }, "404": { description: não encontrado } } }
+    patch: { summary: Atualiza fornecedor, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Supplier" } } } }, responses: { "200": { description: ok } } }
+  /services:
+    get: { summary: Lista serviços (filtros supplier_id, status, category, unit_id, owner, cost_center, criticality), responses: { "200": { description: ok } } }
+    post: { summary: Cria serviço, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Service" } } } }, responses: { "201": { description: criado } } }
+  /services/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Serviço, responses: { "200": { description: ok } } }
+    patch: { summary: Atualiza serviço, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Service" } } } }, responses: { "200": { description: ok } } }
+  /contracts:
+    get: { summary: Lista contratos (inclui days_to_end), responses: { "200": { description: ok } } }
+    post: { summary: Cria contrato, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Contract" } } } }, responses: { "201": { description: criado } } }
+  /contracts/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Contrato, responses: { "200": { description: ok } } }
+    patch: { summary: Atualiza contrato, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Contract" } } } }, responses: { "200": { description: ok } } }
+  /expectations:
+    get: { summary: Lista expectativas de cobrança, responses: { "200": { description: ok } } }
+    post: { summary: Cria expectativa, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Expectation" } } } }, responses: { "201": { description: criado } } }
+  /expectations/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Expectativa, responses: { "200": { description: ok } } }
+    patch: { summary: Atualiza expectativa, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Expectation" } } } }, responses: { "200": { description: ok } } }
+  /units:
+    get: { summary: Lista unidades, responses: { "200": { description: ok } } }
+    post: { summary: Cria unidade, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Unit" } } } }, responses: { "201": { description: criado } } }
+  /units/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Unidade, responses: { "200": { description: ok } } }
+    patch: { summary: Atualiza unidade, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Unit" } } } }, responses: { "200": { description: ok } } }
+
+  /invoices:
+    get: { summary: Lista faturas (filtros status, supplier_id, service_id, unit_id, category, owner, due_on_from/to, competence, audit_result, source), responses: { "200": { description: ok } } }
+    post: { summary: Cria fatura manualmente (status RECEIVED), requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Invoice" } } } }, responses: { "201": { description: criada } } }
+  /invoices/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Fatura, responses: { "200": { description: ok } } }
+    patch: { summary: Corrige dados da fatura, requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Invoice" } } } }, responses: { "200": { description: ok } } }
+  /invoices/upload:
+    post:
+      summary: Recebe PDF/XML/imagem, cria a fatura (ou anexa a invoice_id) e enfileira o processamento
+      requestBody:
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary }, invoice_id: { type: integer } } }
+      responses:
+        "201": { description: "{invoice_id, document_id, same_file_invoice_ids?}" }
+        "400": { description: tipo não permitido (detectado pelo conteúdo) ou tamanho excedido }
+  /invoices/{id}/detail:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Fatura com eventos, auditorias, execuções de IA, documentos, comunicações e alterações, responses: { "200": { description: ok } } }
+  /invoices/{id}/process:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Enfileira reprocessamento (OCR → extração → identificação → auditoria), responses: { "202": { description: na fila } } }
+  /invoices/{id}/audit:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Reexecuta a auditoria imediatamente (audits.execute), responses: { "200": { description: detalhe atualizado }, "409": { description: transição não permitida } } }
+  /invoices/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      summary: Move a fatura no workflow
+      description: |
+        Permissão por destino: APPROVED/REJECTED/REVIEW/AUDITING exigem audits.execute;
+        PROCESSING exige invoices.write; FOR_PAYMENT/PAID exigem payments.write.
+        Aprovar ou rejeitar manualmente exige justificativa (`note`).
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [to], properties: { to: { type: string }, note: { type: string } } }
+      responses:
+        "200": { description: detalhe atualizado }
+        "403": { description: sem permissão para o destino }
+        "409": { description: transição não permitida pela máquina de estados }
+  /documents/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get: { summary: Baixa o documento (somente autenticado; servido com CSP sandbox), responses: { "200": { description: arquivo } } }
+
+  /dashboard/executive:
+    get:
+      summary: KPIs, séries mensais e quebras por fornecedor/categoria/status
+      parameters:
+        - { $ref: "#/components/parameters/from" }
+        - { $ref: "#/components/parameters/to" }
+        - { name: supplier_id, in: query, schema: { type: integer } }
+        - { name: service_id, in: query, schema: { type: integer } }
+        - { name: unit_id, in: query, schema: { type: integer } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: owner, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses: { "200": { description: ok } }
+  /dashboard/due:
+    get: { summary: Vencimentos (vencidas, hoje, 3/7/15/30 dias) e expectativas sem fatura, responses: { "200": { description: ok } } }
+  /dashboard/audit:
+    get: { summary: Indicadores de auditoria do período, parameters: [{ $ref: "#/components/parameters/from" }, { $ref: "#/components/parameters/to" }], responses: { "200": { description: ok } } }
+
+  /notifications:
+    get: { summary: Últimas notificações (filtro channel), responses: { "200": { description: ok } } }
+  /notifications/{id}/read:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Marca como lida, responses: { "204": { description: ok } } }
+  /notifications/{id}/retry:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Recoloca na fila de envio, responses: { "204": { description: ok } } }
+  /automation/rules:
+    get: { summary: Regras de automação com contagem de execuções, responses: { "200": { description: ok } } }
+  /automation/rules/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Ativa/desativa regra, requestBody: { content: { application/json: { schema: { type: object, properties: { enabled: { type: boolean } } } } } }, responses: { "204": { description: ok } } }
+  /automation/scan:
+    post: { summary: Executa a varredura (expectativas, faltantes, vencimentos, contratos) agora, responses: { "200": { description: ok } } }
+  /logs/audit:
+    get: { summary: Trilha de auditoria (filtros entity, entity_id), responses: { "200": { description: ok } } }
+  /logs/jobs:
+    get: { summary: Tarefas em segundo plano (filtro status), responses: { "200": { description: ok } } }
+  /search:
+    get: { summary: Busca global, parameters: [{ $ref: "#/components/parameters/q" }], responses: { "200": { description: ok } } }
+  /users:
+    get: { summary: Usuários (admin), responses: { "200": { description: ok } } }
+    post: { summary: Cria usuário, responses: { "200": { description: ok } } }
+  /users/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post: { summary: Atualiza usuário (nome, papel, senha, ativo); encerra sessões ao trocar senha/desativar, responses: { "200": { description: ok } } }
