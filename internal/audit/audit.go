@@ -179,15 +179,15 @@ func Run(f Facts) Result {
 		v := Variance(inv.Amount, expected)
 		ev := map[string]any{"valor": inv.Amount, "esperado": expected, "variacao_pct": round2(v), "tolerancia_pct": tol}
 		if math.Abs(v) > tol {
-			fail("amount", "Valor", Blocked, fmt.Sprintf("variação de %.2f%% acima da tolerância de %.2f%%", v, tol), ev)
+			fail("amount", "Valor", Blocked, "variação de "+pct(v)+" acima da tolerância de "+pct(tol), ev)
 		} else {
-			add(Check{Code: "amount", Label: "Valor", Outcome: OK, Detail: fmt.Sprintf("dentro da tolerância (%.2f%%)", v), Evidence: ev})
+			add(Check{Code: "amount", Label: "Valor", Outcome: OK, Detail: "dentro da tolerância (" + pct(v) + ")", Evidence: ev})
 		}
 	}
 	if avg := mean(f.History); avg > 0 && inv.Amount > 0 {
 		if v := Variance(inv.Amount, avg); math.Abs(v) > tol {
 			add(Check{Code: "history", Label: "Histórico", Outcome: Warn,
-				Detail:   fmt.Sprintf("%.2f%% em relação à média das últimas %d faturas", v, len(f.History)),
+				Detail:   fmt.Sprintf("%s em relação à média das últimas %d faturas", pct(v), len(f.History)),
 				Evidence: map[string]any{"media": round2(avg), "historico": f.History}})
 		}
 	}
@@ -212,7 +212,7 @@ func Run(f Facts) Result {
 		case err != nil:
 			fail("payment", "Dados de pagamento", Blocked, "linha digitável com dígito verificador inválido", nil)
 		case b.Amount > 0 && math.Abs(b.Amount-inv.Amount) > 0.009:
-			fail("payment", "Dados de pagamento", Blocked, fmt.Sprintf("valor do boleto (%.2f) difere da fatura (%.2f)", b.Amount, inv.Amount), nil)
+			fail("payment", "Dados de pagamento", Blocked, "valor do boleto ("+brl(b.Amount)+") difere da fatura ("+brl(inv.Amount)+")", nil)
 		case b.Due != nil && inv.Due != nil && !b.Due.Equal(day(*inv.Due)):
 			fail("payment", "Dados de pagamento", Review, "vencimento do boleto ("+b.Due.Format("02/01/2006")+") difere da fatura", nil)
 		default:
@@ -225,7 +225,7 @@ func Run(f Facts) Result {
 	}
 
 	if f.AutoApproveMax > 0 && inv.Amount > f.AutoApproveMax {
-		fail("approval_limit", "Alçada", Review, fmt.Sprintf("valor acima do limite de aprovação automática (%.2f)", f.AutoApproveMax), nil)
+		fail("approval_limit", "Alçada", Review, "valor acima do limite de aprovação automática ("+brl(f.AutoApproveMax)+")", nil)
 	}
 
 	status := Approved
@@ -280,3 +280,7 @@ func Summary(r Result) string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+func pct(f float64) string { return strings.Replace(fmt.Sprintf("%.2f%%", f), ".", ",", 1) }
+
+func brl(f float64) string { return "R$ " + strings.Replace(fmt.Sprintf("%.2f", f), ".", ",", 1) }
